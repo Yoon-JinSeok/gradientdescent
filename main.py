@@ -6,6 +6,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import rcParams
 from sklearn.model_selection import train_test_split
+from PIL import Image
 
 # ──────────────────────────────────────────────
 # 페이지 설정
@@ -366,25 +367,49 @@ if current >= 8:
     with st.container(border=True):
         st.header("8단계 · 경사하강법으로 최적 추세선 찾기")
 
-        c1, c2, c3 = st.columns(3)
-        eta = c1.number_input("학습률 eta", value=0.02, step=0.01, format="%.4f", key="eta")
-        epochs = c2.number_input("반복 횟수", value=2001, step=100, min_value=1, key="epochs")
-        log_every = c3.number_input("로그 간격", value=100, step=50, min_value=1, key="log_every")
+        c1, c2, c3, c4 = st.columns(4)
+        eta = c1.number_input("학습률 eta", value=0.02, step=0.01,
+                              format="%.4f", key="eta")
+        epochs = c2.number_input("반복 횟수", value=2001, step=100,
+                                 min_value=1, key="epochs")
+        log_every = c3.number_input("로그 간격", value=100, step=50,
+                                    min_value=1, key="log_every")
+        frame_every = c4.number_input("GIF 프레임 간격", value=50, step=10,
+                                      min_value=1, key="frame_every",
+                                      help="작을수록 부드럽지만 GIF 용량이 커집니다")
+
+        gif_duration = st.slider(
+            "프레임 1장당 표시 시간 (ms)", 30, 500, 120, 10, key="gif_dur"
+        )
 
         if "a_final" not in st.session_state:
-            if st.button("🚀 학습 시작", key="do_train"):
+            if st.button("🚀 학습 시작 (GIF 생성 포함)", key="do_train"):
                 x = st.session_state.x_train.values
                 y = st.session_state.y_train.values
                 x_test_v = st.session_state.x_test.values
                 y_test_v = st.session_state.y_test.values
 
+                Xname = st.session_state.Xname
+                Yname = st.session_state.Yname
+                x_lbl = safe_label(Xname, "X")
+                y_lbl = safe_label(Yname, "Y")
+
                 a_, b_ = 0.0, 0.0
                 mse_train_list, mse_test_list = [], []
                 logs = []
+                frames = []  # GIF 프레임 누적
 
-                progress = st.progress(0)
+                # 그래프 축 범위 고정 (애니메이션 떨림 방지)
+                x_min, x_max = float(x.min()), float(x.max())
+                y_min, y_max = float(y.min()), float(y.max())
+                x_pad = (x_max - x_min) * 0.05
+                y_pad = (y_max - y_min) * 0.1
+                xs = np.linspace(x_min, x_max, 100)
 
-                for i in range(int(epochs)):
+                progress = st.progress(0, text="학습 + GIF 프레임 캡처 중...")
+
+                total = int(epochs)
+                for i in range(total):
                     y_hat = a_ * x + b_
                     grad_a = -2 * np.mean((y - y_hat) * x)
                     grad_b = -2 * np.mean(y - y_hat)
@@ -399,17 +424,63 @@ if current >= 8:
                     if i % int(log_every) == 0:
                         logs.append((i, mse, a_, b_))
 
-                    if i % max(1, int(epochs) // 100) == 0:
-                        progress.progress(min(1.0, (i + 1) / int(epochs)))
+                    # GIF 프레임 캡처
+                    if (i % int(frame_every) == 0) or (i == total - 1):
+                        fig, ax = plt.subplots(figsize=(7, 4.5), dpi=100)
+                        ax.scatter(x, y, alpha=0.4, s=20, label="Train data")
+                        ax.plot(xs, a_ * xs + b_, color="red", lw=2,
+                                label=f"y = {a_:.4f}x + {b_:.4f}")
+                        ax.set_xlim(x_min - x_pad, x_max + x_pad)
+                        ax.set_ylim(y_min - y_pad, y_max + y_pad)
+                        ax.set_xlabel(x_lbl)
+                        ax.set_ylabel(y_lbl)
+                        ax.set_title(f"Epoch {i}  |  MSE = {mse:.6f}")
+                        ax.legend(loc="upper left")
+                        ax.grid(alpha=0.3)
+                        fig.tight_layout()
 
-                progress.progress(1.0)
+                        buf = io.BytesIO()
+                        fig.savefig(buf, format="png")
+                        plt.close(fig)
+                        buf.seek(0)
+                        # PIL Image 로 변환 후 메모리에 보관
+                        frames.append(Image.open(buf).convert("P", palette=Image.ADAPTIVE))
+
+                    if i % max(1, total // 100) == 0:
+                        progress.progress(
+                            min(1.0, (i + 1) / total),
+                            text=f"학습 진행 {i+1}/{total} (프레임 {len(frames)}장)",
+                        )
+
+                progress.progress(1.0, text="GIF 합성 중...")
+
+                # GIF 합성
+                gif_buf = io.BytesIO()
+                if len(frames) >= 2:
+                    frames[0].save(
+                        gif_buf,
+                        format="GIF",
+                        save_all=True,
+                        append_images=frames[1:],
+                        duration=int(gif_duration),
+                        loop=0,
+                        optimize=True,
+                        disposal=2,
+                    )
+                else:
+                    # 프레임이 1장뿐이면 단일 이미지로 저장
+                    frames[0].save(gif_buf, format="GIF")
+
+                gif_bytes = gif_buf.getvalue()
 
                 st.session_state.update(
                     a_final=a_, b_final=b_,
                     mse_train_list=mse_train_list,
                     mse_test_list=mse_test_list,
                     train_logs=logs,
+                    train_gif=gif_bytes,
                 )
+                progress.empty()
                 st.rerun()
 
         if "a_final" in st.session_state:
@@ -419,10 +490,26 @@ if current >= 8:
 
             st.success(f"학습 완료 → a = {a_:.6f}, b = {b_:.6f}")
 
+            # 🎬 학습 과정 GIF
+            if "train_gif" in st.session_state:
+                st.subheader("🎬 학습 과정 애니메이션 (GIF)")
+                gif_bytes = st.session_state.train_gif
+                st.image(gif_bytes, caption="경사하강법으로 추세선이 갱신되는 과정",
+                         use_container_width=True)
+                st.download_button(
+                    label="⬇️ GIF 다운로드",
+                    data=gif_bytes,
+                    file_name="gradient_descent.gif",
+                    mime="image/gif",
+                )
+                st.caption(f"GIF 용량: {len(gif_bytes) / 1024:.1f} KB")
+
+            # 학습 로그
             st.subheader("📜 학습 로그")
             log_df = pd.DataFrame(logs, columns=["i", "MSE", "a", "b"])
             st.dataframe(log_df, use_container_width=True)
 
+            # 최종 추세선 (정적)
             x = st.session_state.x_train.values
             y = st.session_state.y_train.values
             Xname = st.session_state.Xname
@@ -446,12 +533,13 @@ if current >= 8:
             # 재학습 옵션
             if st.button("🔁 다시 학습 (파라미터 변경 후)", key="retrain"):
                 for k in ["a_final", "b_final", "mse_train_list",
-                          "mse_test_list", "train_logs"]:
+                          "mse_test_list", "train_logs", "train_gif"]:
                     st.session_state.pop(k, None)
                 st.rerun()
 
             if current == 8:
                 st.button("➡️ 9단계로 이동", on_click=goto, args=(9,), key="to9")
+
 
 # ==============================================
 # STEP 9. 모델 평가
