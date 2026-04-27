@@ -1,22 +1,50 @@
-# -*- coding: utf-8 -*-
-"""
-추세선 기반 선형 회귀(예측) 분석 - Streamlit 웹앱
-제작 : 윤진석
-"""
-
-import io
-import numpy as np
-import pandas as pd
+import os
 import streamlit as st
+import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib
+import matplotlib.font_manager as fm
+from matplotlib import rcParams
+from sklearn.model_selection import train_test_split
+import io
 
-# 한글 폰트 지원 (Streamlit Cloud에서도 동작)
-try:
-    import koreanize_matplotlib  # noqa: F401
-except Exception:
-    # 한글 폰트가 없을 경우 기본값으로 진행 (마이너스 깨짐 방지)
-    matplotlib.rcParams['axes.unicode_minus'] = False
+# ──────────────────────────────────────────────
+# 한글 폰트 설정 (Streamlit Cloud 대응)
+# ──────────────────────────────────────────────
+@st.cache_resource
+def set_korean_font():
+    # 1) 리눅스(Streamlit Cloud) – packages.txt 로 설치된 나눔폰트 우선
+    candidates = [
+        "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+        "/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf",
+        "/usr/share/fonts/opentype/nanum/NanumGothic.otf",
+        # 2) macOS
+        "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+        # 3) Windows
+        "C:/Windows/Fonts/malgun.ttf",
+    ]
+
+    font_path = next((p for p in candidates if os.path.exists(p)), None)
+
+    if font_path:
+        # 폰트 매니저에 등록
+        fm.fontManager.addfont(font_path)
+        font_name = fm.FontProperties(fname=font_path).get_name()
+        rcParams["font.family"] = font_name
+    else:
+        # 최후의 수단: 일반적으로 알려진 이름들 시도
+        rcParams["font.family"] = ["NanumGothic", "Malgun Gothic", "AppleGothic", "DejaVu Sans"]
+
+    rcParams["axes.unicode_minus"] = False  # 마이너스(-) 깨짐 방지
+    # matplotlib 폰트 캐시가 오래된 경우 재생성
+    try:
+        fm._load_fontmanager(try_read_cache=False)
+    except Exception:
+        pass
+    return rcParams["font.family"]
+
+set_korean_font()
+
 
 from sklearn.model_selection import train_test_split
 
