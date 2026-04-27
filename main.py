@@ -16,17 +16,14 @@ st.set_page_config(
     layout="wide",
 )
 
-# 마이너스 기호 깨짐만 방지 (한글 폰트는 사용하지 않음)
-rcParams["axes.unicode_minus"] = False
+rcParams["axes.unicode_minus"] = False  # 마이너스 기호 깨짐 방지
 
 # ──────────────────────────────────────────────
-# 헬퍼: 컬럼명을 안전한 ASCII 라벨로 변환
-# (그래프 라벨에 한글 컬럼명이 들어가도 깨지지 않게)
+# 헬퍼: 컬럼명이 ASCII 가 아니면 fallback 사용 (그래프 라벨용)
 # ──────────────────────────────────────────────
 def safe_label(name: str, fallback: str) -> str:
-    """컬럼명에 ASCII 외 문자가 있으면 fallback 반환"""
     try:
-        name.encode("ascii")
+        str(name).encode("ascii")
         return str(name)
     except UnicodeEncodeError:
         return fallback
@@ -38,7 +35,7 @@ if "step" not in st.session_state:
     st.session_state.step = 1
 
 def goto(step: int):
-    st.session_state.step = step
+    st.session_state.step = max(st.session_state.step, step)
 
 # ──────────────────────────────────────────────
 # 사이드바: 진행 상황
@@ -77,37 +74,42 @@ st.title("📈 추세선 기반 선형 회귀(예측) 분석")
 st.caption("제작 : 윤진석")
 st.divider()
 
+current = st.session_state.step  # 현재 진행 중인 단계 번호
+
 # ==============================================
 # STEP 1. 데이터 수집
 # ==============================================
-if st.session_state.step == 1:
-    st.header("1단계 · 데이터 수집")
-    st.write("CSV / Excel 파일을 업로드하세요. (한글 인코딩 자동 감지)")
+if current >= 1:
+    with st.container(border=True):
+        st.header("1단계 · 데이터 수집")
+        st.write("CSV / Excel 파일을 업로드하세요. (한글 인코딩 자동 감지)")
 
-    file = st.file_uploader("파일 업로드", type=["csv", "xlsx", "xls"])
+        file = st.file_uploader("파일 업로드", type=["csv", "xlsx", "xls"], key="uploader")
 
-    if file is not None:
-        df = None
-        try:
-            if file.name.lower().endswith((".xlsx", ".xls")):
-                df = pd.read_excel(file)
-            else:
-                # 여러 인코딩 자동 시도
-                raw = file.read()
-                for enc in ["utf-8", "utf-8-sig", "cp949", "euc-kr", "latin-1"]:
-                    try:
-                        df = pd.read_csv(io.BytesIO(raw), encoding=enc)
-                        st.success(f"✅ 인코딩 `{enc}` 으로 로드 완료")
-                        break
-                    except UnicodeDecodeError:
-                        continue
-                if df is None:
-                    st.error("지원되는 인코딩으로 파일을 읽지 못했습니다.")
-        except Exception as e:
-            st.error(f"파일 로드 오류: {e}")
+        if file is not None and "df" not in st.session_state:
+            df = None
+            try:
+                if file.name.lower().endswith((".xlsx", ".xls")):
+                    df = pd.read_excel(file)
+                else:
+                    raw = file.read()
+                    for enc in ["utf-8", "utf-8-sig", "cp949", "euc-kr", "latin-1"]:
+                        try:
+                            df = pd.read_csv(io.BytesIO(raw), encoding=enc)
+                            st.success(f"✅ 인코딩 `{enc}` 으로 로드 완료")
+                            break
+                        except UnicodeDecodeError:
+                            continue
+                    if df is None:
+                        st.error("지원되는 인코딩으로 파일을 읽지 못했습니다.")
+            except Exception as e:
+                st.error(f"파일 로드 오류: {e}")
 
-        if df is not None:
-            st.session_state.df = df
+            if df is not None:
+                st.session_state.df = df
+
+        if "df" in st.session_state:
+            df = st.session_state.df
 
             st.subheader("📄 상위 10개 행")
             st.dataframe(df.head(10), use_container_width=True)
@@ -123,18 +125,17 @@ if st.session_state.step == 1:
             })
             st.dataframe(info_df, use_container_width=True)
 
-            st.button("➡️ 2단계로 이동", on_click=goto, args=(2,))
+            if current == 1:
+                st.button("➡️ 2단계로 이동", on_click=goto, args=(2,), key="to2")
 
 # ==============================================
 # STEP 2. 결측치 제거
 # ==============================================
-elif st.session_state.step == 2:
-    st.header("2단계 · 결측치 제거")
-    df = st.session_state.get("df")
-    if df is None:
-        st.warning("1단계에서 먼저 데이터를 업로드해 주세요.")
-        st.button("⬅️ 1단계로", on_click=goto, args=(1,))
-    else:
+if current >= 2:
+    with st.container(border=True):
+        st.header("2단계 · 결측치 제거")
+        df = st.session_state.get("df")
+
         st.subheader("📋 데이터 구성 정보 (df.info)")
         buf = io.StringIO()
         df.info(buf=buf)
@@ -146,60 +147,93 @@ elif st.session_state.step == 2:
             use_container_width=True,
         )
 
-        if st.button("결측치 제거 실행 (dropna)"):
-            df_clean = df.dropna().copy()
-            st.session_state.df_clean = df_clean
-            st.success(f"제거 전 {df.shape[0]:,}행 → 제거 후 {df_clean.shape[0]:,}행")
+        if "df_clean" not in st.session_state:
+            if st.button("결측치 제거 실행 (dropna)", key="do_dropna"):
+                st.session_state.df_clean = df.dropna().copy()
+                st.rerun()
 
         if "df_clean" in st.session_state:
+            df_clean = st.session_state.df_clean
+            st.success(f"제거 전 {df.shape[0]:,}행 → 제거 후 {df_clean.shape[0]:,}행")
+
             st.subheader("✅ 결측치 제거 후 정보")
             buf2 = io.StringIO()
-            st.session_state.df_clean.info(buf=buf2)
+            df_clean.info(buf=buf2)
             st.code(buf2.getvalue())
-            st.button("➡️ 3단계로 이동", on_click=goto, args=(3,))
+
+            if current == 2:
+                st.button("➡️ 3단계로 이동", on_click=goto, args=(3,), key="to3")
 
 # ==============================================
-# STEP 3. 독립변수 / 종속변수 선택
+# STEP 3. 변수 선택
 # ==============================================
-elif st.session_state.step == 3:
-    st.header("3단계 · 독립변수와 종속변수 선택")
-    df_clean = st.session_state.get("df_clean")
-    if df_clean is None:
-        st.warning("2단계를 먼저 진행해 주세요.")
-        st.button("⬅️ 2단계로", on_click=goto, args=(2,))
-    else:
+if current >= 3:
+    with st.container(border=True):
+        st.header("3단계 · 독립변수와 종속변수 선택")
+        df_clean = st.session_state.get("df_clean")
         num_cols = df_clean.select_dtypes(include=[np.number]).columns.tolist()
+
         if len(num_cols) < 2:
             st.error("숫자형 컬럼이 2개 이상 필요합니다.")
         else:
+            # 이미 선택했다면 그 값을 기본값으로
+            default_x = st.session_state.get("Xname", num_cols[0])
+            if default_x not in num_cols:
+                default_x = num_cols[0]
+
             c1, c2 = st.columns(2)
             with c1:
-                Xname = st.selectbox("독립변수 (X)", num_cols, index=0)
+                Xname = st.selectbox(
+                    "독립변수 (X)", num_cols,
+                    index=num_cols.index(default_x), key="X_select"
+                )
+            y_options = [c for c in num_cols if c != Xname]
+            default_y = st.session_state.get("Yname", y_options[0])
+            if default_y not in y_options:
+                default_y = y_options[0]
             with c2:
-                y_options = [c for c in num_cols if c != Xname]
-                Yname = st.selectbox("종속변수 (Y)", y_options, index=0)
+                Yname = st.selectbox(
+                    "종속변수 (Y)", y_options,
+                    index=y_options.index(default_y), key="Y_select"
+                )
 
             st.info(f"Xname : **{Xname}**  /  Yname : **{Yname}**")
             st.dataframe(df_clean[[Xname, Yname]], use_container_width=True)
 
-            if st.button("✅ 변수 확정 후 4단계로"):
-                st.session_state.Xname = Xname
-                st.session_state.Yname = Yname
-                goto(4)
-                st.rerun()
+            # 변수 확정
+            if "Xname" not in st.session_state or "Yname" not in st.session_state:
+                if st.button("✅ 변수 확정", key="confirm_var"):
+                    st.session_state.Xname = Xname
+                    st.session_state.Yname = Yname
+                    st.rerun()
+            else:
+                # 변경 가능
+                if (Xname != st.session_state.Xname) or (Yname != st.session_state.Yname):
+                    if st.button("🔁 선택 변경 적용 (이후 단계 초기화)", key="change_var"):
+                        # 이후 단계 결과 초기화
+                        for k in ["df_norm", "Xmax", "Xmin", "Ymax", "Ymin",
+                                  "x_train", "x_test", "y_train", "y_test",
+                                  "a_init", "b_init", "a_final", "b_final",
+                                  "mse_train_list", "mse_test_list"]:
+                            st.session_state.pop(k, None)
+                        st.session_state.Xname = Xname
+                        st.session_state.Yname = Yname
+                        st.session_state.step = 3
+                        st.rerun()
+
+                if current == 3:
+                    st.button("➡️ 4단계로 이동", on_click=goto, args=(4,), key="to4")
 
 # ==============================================
-# STEP 4. 데이터 정규화 (Min-Max)
+# STEP 4. 데이터 정규화
 # ==============================================
-elif st.session_state.step == 4:
-    st.header("4단계 · 데이터 정규화 (Min-Max)")
-    df_clean = st.session_state.get("df_clean")
-    Xname = st.session_state.get("Xname")
-    Yname = st.session_state.get("Yname")
-    if not (Xname and Yname):
-        st.warning("3단계를 먼저 진행해 주세요.")
-        st.button("⬅️ 3단계로", on_click=goto, args=(3,))
-    else:
+if current >= 4:
+    with st.container(border=True):
+        st.header("4단계 · 데이터 정규화 (Min-Max)")
+        df_clean = st.session_state.df_clean
+        Xname = st.session_state.Xname
+        Yname = st.session_state.Yname
+
         Xmax, Xmin = df_clean[Xname].max(), df_clean[Xname].min()
         Ymax, Ymin = df_clean[Yname].max(), df_clean[Yname].min()
 
@@ -219,33 +253,35 @@ elif st.session_state.step == 4:
         st.session_state.update(
             Xmax=Xmax, Xmin=Xmin, Ymax=Ymax, Ymin=Ymin, df_norm=df_norm
         )
-        st.button("➡️ 5단계로 이동", on_click=goto, args=(5,))
+
+        if current == 4:
+            st.button("➡️ 5단계로 이동", on_click=goto, args=(5,), key="to5")
 
 # ==============================================
 # STEP 5. 데이터 분할
 # ==============================================
-elif st.session_state.step == 5:
-    st.header("5단계 · 학습 / 테스트 데이터 분할")
-    df_norm = st.session_state.get("df_norm")
-    Xname = st.session_state.get("Xname")
-    Yname = st.session_state.get("Yname")
-    if df_norm is None:
-        st.warning("4단계를 먼저 진행해 주세요.")
-        st.button("⬅️ 4단계로", on_click=goto, args=(4,))
-    else:
-        test_size = st.slider("테스트 데이터 비율", 0.1, 0.5, 0.3, 0.05)
-        random_state = st.number_input("random_state", value=42, step=1)
+if current >= 5:
+    with st.container(border=True):
+        st.header("5단계 · 학습 / 테스트 데이터 분할")
+        df_norm = st.session_state.df_norm
+        Xname = st.session_state.Xname
+        Yname = st.session_state.Yname
 
-        if st.button("데이터 분할 실행"):
-            x_train, x_test, y_train, y_test = train_test_split(
-                df_norm[Xname], df_norm[Yname],
-                test_size=test_size, random_state=int(random_state),
-            )
-            st.session_state.update(
-                x_train=x_train, x_test=x_test,
-                y_train=y_train, y_test=y_test,
-            )
-            st.success("분할 완료")
+        c1, c2 = st.columns(2)
+        test_size = c1.slider("테스트 데이터 비율", 0.1, 0.5, 0.3, 0.05, key="test_size")
+        random_state = c2.number_input("random_state", value=42, step=1, key="rs")
+
+        if "x_train" not in st.session_state:
+            if st.button("데이터 분할 실행", key="do_split"):
+                x_train, x_test, y_train, y_test = train_test_split(
+                    df_norm[Xname], df_norm[Yname],
+                    test_size=test_size, random_state=int(random_state),
+                )
+                st.session_state.update(
+                    x_train=x_train, x_test=x_test,
+                    y_train=y_train, y_test=y_test,
+                )
+                st.rerun()
 
         if "x_train" in st.session_state:
             x_train = st.session_state.x_train
@@ -253,25 +289,26 @@ elif st.session_state.step == 5:
             y_train = st.session_state.y_train
             y_test = st.session_state.y_test
 
+            st.success("분할 완료")
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("x_train", f"{x_train.shape[0]:,}")
             c2.metric("x_test", f"{x_test.shape[0]:,}")
             c3.metric("y_train", f"{y_train.shape[0]:,}")
             c4.metric("y_test", f"{y_test.shape[0]:,}")
-            st.button("➡️ 6단계로 이동", on_click=goto, args=(6,))
+
+            if current == 5:
+                st.button("➡️ 6단계로 이동", on_click=goto, args=(6,), key="to6")
 
 # ==============================================
-# STEP 6. 추세선 그리기 (초기값)
+# STEP 6. 초기 추세선
 # ==============================================
-elif st.session_state.step == 6:
-    st.header("6단계 · 초기 추세선 그리기")
-    if "x_train" not in st.session_state:
-        st.warning("5단계를 먼저 진행해 주세요.")
-        st.button("⬅️ 5단계로", on_click=goto, args=(5,))
-    else:
+if current >= 6:
+    with st.container(border=True):
+        st.header("6단계 · 초기 추세선 그리기")
+
         c1, c2 = st.columns(2)
-        a = c1.number_input("기울기 a (초깃값)", value=0.0, step=0.1)
-        b = c2.number_input("y절편 b (초깃값)", value=0.0, step=0.1)
+        a = c1.number_input("기울기 a (초깃값)", value=0.0, step=0.1, key="a_init_input")
+        b = c2.number_input("y절편 b (초깃값)", value=0.0, step=0.1, key="b_init_input")
 
         st.latex(f"y = {a} \\cdot x + {b}")
 
@@ -296,16 +333,17 @@ elif st.session_state.step == 6:
 
         st.session_state.a_init = a
         st.session_state.b_init = b
-        st.button("➡️ 7단계로 이동", on_click=goto, args=(7,))
+
+        if current == 6:
+            st.button("➡️ 7단계로 이동", on_click=goto, args=(7,), key="to7")
 
 # ==============================================
-# STEP 7. 손실함수 계산 (MSE)
+# STEP 7. 손실함수 계산
 # ==============================================
-elif st.session_state.step == 7:
-    st.header("7단계 · 손실함수(MSE) 계산")
-    if "x_train" not in st.session_state:
-        st.warning("이전 단계를 먼저 진행해 주세요.")
-    else:
+if current >= 7:
+    with st.container(border=True):
+        st.header("7단계 · 손실함수(MSE) 계산")
+
         a = st.session_state.get("a_init", 0.0)
         b = st.session_state.get("b_init", 0.0)
         x = st.session_state.x_train
@@ -318,103 +356,117 @@ elif st.session_state.step == 7:
         st.metric("초기 추세선의 MSE", f"{mse:.6f}")
         st.caption(f"(a = {a}, b = {b} 기준)")
 
-        st.button("➡️ 8단계로 이동", on_click=goto, args=(8,))
+        if current == 7:
+            st.button("➡️ 8단계로 이동", on_click=goto, args=(8,), key="to8")
 
 # ==============================================
 # STEP 8. 경사하강법
 # ==============================================
-elif st.session_state.step == 8:
-    st.header("8단계 · 경사하강법으로 최적 추세선 찾기")
-    if "x_train" not in st.session_state:
-        st.warning("이전 단계를 먼저 진행해 주세요.")
-    else:
-        c1, c2, c3 = st.columns(3)
-        eta = c1.number_input("학습률 eta", value=0.02, step=0.01, format="%.4f")
-        epochs = c2.number_input("반복 횟수", value=2001, step=100, min_value=1)
-        log_every = c3.number_input("로그 간격", value=100, step=50, min_value=1)
+if current >= 8:
+    with st.container(border=True):
+        st.header("8단계 · 경사하강법으로 최적 추세선 찾기")
 
-        if st.button("🚀 학습 시작"):
+        c1, c2, c3 = st.columns(3)
+        eta = c1.number_input("학습률 eta", value=0.02, step=0.01, format="%.4f", key="eta")
+        epochs = c2.number_input("반복 횟수", value=2001, step=100, min_value=1, key="epochs")
+        log_every = c3.number_input("로그 간격", value=100, step=50, min_value=1, key="log_every")
+
+        if "a_final" not in st.session_state:
+            if st.button("🚀 학습 시작", key="do_train"):
+                x = st.session_state.x_train.values
+                y = st.session_state.y_train.values
+                x_test_v = st.session_state.x_test.values
+                y_test_v = st.session_state.y_test.values
+
+                a_, b_ = 0.0, 0.0
+                mse_train_list, mse_test_list = [], []
+                logs = []
+
+                progress = st.progress(0)
+
+                for i in range(int(epochs)):
+                    y_hat = a_ * x + b_
+                    grad_a = -2 * np.mean((y - y_hat) * x)
+                    grad_b = -2 * np.mean(y - y_hat)
+                    a_ = a_ - eta * grad_a
+                    b_ = b_ - eta * grad_b
+
+                    mse = float(np.mean((y - (a_ * x + b_)) ** 2))
+                    mse_t = float(np.mean((y_test_v - (a_ * x_test_v + b_)) ** 2))
+                    mse_train_list.append(mse)
+                    mse_test_list.append(mse_t)
+
+                    if i % int(log_every) == 0:
+                        logs.append((i, mse, a_, b_))
+
+                    if i % max(1, int(epochs) // 100) == 0:
+                        progress.progress(min(1.0, (i + 1) / int(epochs)))
+
+                progress.progress(1.0)
+
+                st.session_state.update(
+                    a_final=a_, b_final=b_,
+                    mse_train_list=mse_train_list,
+                    mse_test_list=mse_test_list,
+                    train_logs=logs,
+                )
+                st.rerun()
+
+        if "a_final" in st.session_state:
+            a_ = st.session_state.a_final
+            b_ = st.session_state.b_final
+            logs = st.session_state.get("train_logs", [])
+
+            st.success(f"학습 완료 → a = {a_:.6f}, b = {b_:.6f}")
+
+            st.subheader("📜 학습 로그")
+            log_df = pd.DataFrame(logs, columns=["i", "MSE", "a", "b"])
+            st.dataframe(log_df, use_container_width=True)
+
             x = st.session_state.x_train.values
             y = st.session_state.y_train.values
-            x_test_v = st.session_state.x_test.values
-            y_test_v = st.session_state.y_test.values
-
-            a, b = 0.0, 0.0
-            mse_train_list, mse_test_list = [], []
-            logs = []
-
             Xname = st.session_state.Xname
             Yname = st.session_state.Yname
             x_lbl = safe_label(Xname, "X")
             y_lbl = safe_label(Yname, "Y")
 
-            progress = st.progress(0)
-            log_box = st.container()
+            st.subheader("📈 최종 추세선")
+            fig, ax = plt.subplots(figsize=(8, 5))
+            ax.scatter(x, y, alpha=0.5, label="Train data")
+            xs = np.linspace(x.min(), x.max(), 100)
+            ax.plot(xs, a_ * xs + b_, color="r",
+                    label=f"y = {a_:.4f}x + {b_:.4f}")
+            ax.set_xlabel(x_lbl)
+            ax.set_ylabel(y_lbl)
+            ax.set_title("Final Trend Line")
+            ax.legend()
+            st.pyplot(fig)
+            plt.close(fig)
 
-            for i in range(int(epochs)):
-                y_hat = a * x + b
-                grad_a = -2 * np.mean((y - y_hat) * x)
-                grad_b = -2 * np.mean(y - y_hat)
-                a = a - eta * grad_a
-                b = b - eta * grad_b
+            # 재학습 옵션
+            if st.button("🔁 다시 학습 (파라미터 변경 후)", key="retrain"):
+                for k in ["a_final", "b_final", "mse_train_list",
+                          "mse_test_list", "train_logs"]:
+                    st.session_state.pop(k, None)
+                st.rerun()
 
-                mse = float(np.mean((y - (a * x + b)) ** 2))
-                mse_t = float(np.mean((y_test_v - (a * x_test_v + b)) ** 2))
-                mse_train_list.append(mse)
-                mse_test_list.append(mse_t)
-
-                if i % int(log_every) == 0:
-                    logs.append((i, mse, a, b))
-
-                if i % max(1, int(epochs) // 100) == 0:
-                    progress.progress(min(1.0, (i + 1) / int(epochs)))
-
-            progress.progress(1.0)
-
-            with log_box:
-                st.subheader("📜 학습 로그")
-                log_df = pd.DataFrame(logs, columns=["i", "MSE", "a", "b"])
-                st.dataframe(log_df, use_container_width=True)
-
-                st.subheader("📈 최종 추세선")
-                fig, ax = plt.subplots(figsize=(8, 5))
-                ax.scatter(x, y, alpha=0.5, label="Train data")
-                xs = np.linspace(x.min(), x.max(), 100)
-                ax.plot(xs, a * xs + b, color="r", label=f"y = {a:.4f}x + {b:.4f}")
-                ax.set_xlabel(x_lbl)
-                ax.set_ylabel(y_lbl)
-                ax.set_title("Final Trend Line")
-                ax.legend()
-                st.pyplot(fig)
-                plt.close(fig)
-
-            st.session_state.update(
-                a_final=a, b_final=b,
-                mse_train_list=mse_train_list,
-                mse_test_list=mse_test_list,
-            )
-            st.success(f"학습 완료 → a = {a:.6f}, b = {b:.6f}")
-
-        if "a_final" in st.session_state:
-            st.button("➡️ 9단계로 이동", on_click=goto, args=(9,))
+            if current == 8:
+                st.button("➡️ 9단계로 이동", on_click=goto, args=(9,), key="to9")
 
 # ==============================================
 # STEP 9. 모델 평가
 # ==============================================
-elif st.session_state.step == 9:
-    st.header("9단계 · 모델 평가")
-    if "a_final" not in st.session_state:
-        st.warning("8단계를 먼저 진행해 주세요.")
-        st.button("⬅️ 8단계로", on_click=goto, args=(8,))
-    else:
-        a = st.session_state.a_final
-        b = st.session_state.b_final
+if current >= 9:
+    with st.container(border=True):
+        st.header("9단계 · 모델 평가")
+
+        a_ = st.session_state.a_final
+        b_ = st.session_state.b_final
         x_test = st.session_state.x_test
         y_test = st.session_state.y_test
         mse_train_list = st.session_state.mse_train_list
         mse_test_list = st.session_state.mse_test_list
 
-        # 손실함수 곡선
         st.subheader("📉 Loss Curve")
         fig1, ax1 = plt.subplots(figsize=(8, 5))
         ax1.plot(mse_train_list, label="Train")
@@ -426,8 +478,7 @@ elif st.session_state.step == 9:
         st.pyplot(fig1)
         plt.close(fig1)
 
-        # 결정계수
-        y_pred = a * x_test + b
+        y_pred = a_ * x_test + b_
         mean_y = np.mean(y_test)
         ssr = np.sum((y_test - y_pred) ** 2)
         sst = np.sum((y_test - mean_y) ** 2)
@@ -435,7 +486,6 @@ elif st.session_state.step == 9:
 
         st.metric("결정계수 R²", f"{r2:.6f}")
 
-        # 예측 vs 실제
         st.subheader("🎯 Predicted vs Actual")
         fig2, ax2 = plt.subplots(figsize=(8, 5))
         ax2.scatter(y_test, y_pred, color="blue", alpha=0.6, label="Predicted")
@@ -449,19 +499,18 @@ elif st.session_state.step == 9:
         st.pyplot(fig2)
         plt.close(fig2)
 
-        st.button("➡️ 10단계로 이동", on_click=goto, args=(10,))
+        if current == 9:
+            st.button("➡️ 10단계로 이동", on_click=goto, args=(10,), key="to10")
 
 # ==============================================
 # STEP 10. 활용 (예측)
 # ==============================================
-elif st.session_state.step == 10:
-    st.header("10단계 · 새로운 데이터로 예측")
-    if "a_final" not in st.session_state:
-        st.warning("8단계를 먼저 진행해 주세요.")
-        st.button("⬅️ 8단계로", on_click=goto, args=(8,))
-    else:
-        a = st.session_state.a_final
-        b = st.session_state.b_final
+if current >= 10:
+    with st.container(border=True):
+        st.header("10단계 · 새로운 데이터로 예측")
+
+        a_ = st.session_state.a_final
+        b_ = st.session_state.b_final
         Xmax = st.session_state.Xmax
         Xmin = st.session_state.Xmin
         Ymax = st.session_state.Ymax
@@ -469,20 +518,21 @@ elif st.session_state.step == 10:
         Xname = st.session_state.Xname
         Yname = st.session_state.Yname
 
-        st.write(f"학습된 모델 (정규화 공간): y = **{a:.6f}** · x + **{b:.6f}**")
+        st.write(f"학습된 모델 (정규화 공간): y = **{a_:.6f}** · x + **{b_:.6f}**")
         st.write(f"X 범위: [{Xmin:.4f}, {Xmax:.4f}] / Y 범위: [{Ymin:.4f}, {Ymax:.4f}]")
 
         Xnew = st.number_input(
             f"새로운 {Xname} 값을 입력하세요",
             value=float((Xmin + Xmax) / 2),
             format="%.6f",
+            key="Xnew",
         )
 
-        if st.button("🔮 예측 실행"):
-            Xnew_scal = (Xnew - Xmin) / (Xmax - Xmin)
-            Ypred_norm = a * Xnew_scal + b
-            Ynew = (Ymax - Ymin) * Ypred_norm + Ymin
-            st.success(
-                f"**{Xname}** 이(가) **{Xnew}** 일 때, "
-                f"**{Yname}** 은(는) **{Ynew:.6f}** (으)로 예측됩니다."
-            )
+        Xnew_scal = (Xnew - Xmin) / (Xmax - Xmin)
+        Ypred_norm = a_ * Xnew_scal + b_
+        Ynew = (Ymax - Ymin) * Ypred_norm + Ymin
+
+        st.success(
+            f"**{Xname}** 이(가) **{Xnew}** 일 때, "
+            f"**{Yname}** 은(는) **{Ynew:.6f}** (으)로 예측됩니다."
+        )
